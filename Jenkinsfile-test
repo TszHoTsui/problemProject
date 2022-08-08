@@ -1,0 +1,78 @@
+def get_cicd_sequence() {
+    return "UAT-" + env.BRANCH_NAME.replace("/","_") + "-" + env.BUILD_NUMBER
+}
+
+pipeline {
+
+    agent {
+        node {
+            label 'nodejs16150'
+        }
+    }
+
+    environment {
+        HARBOR_CREDENTIAL_ID = 'harbor'
+        UAT_KUBECONFIG_CREDENTIAL_ID = 'uat-kubeconfig'
+        PRD_KUBECONFIG_CREDENTIAL_ID = 'prd-kubeconfig'
+        CICD_REGISTRY = 'harbor.bluemoon.com.cn'
+        HARBOR_NAMESPACE = 'frontend-web'
+        //镜像库项目空间
+        CICD_SEQUENCE = get_cicd_sequence()
+    }
+
+    stages {
+
+        stage('checkout scm') {
+            steps {
+                checkout(scm)
+            }
+        }
+
+        stage('login') {
+            steps {
+                container('nodejs16150') {
+                    withCredentials([usernamePassword(passwordVariable: 'DOCKER_PASSWORD', usernameVariable: 'DOCKER_USERNAME', credentialsId: "$HARBOR_CREDENTIAL_ID",)]) {
+                        sh 'echo "$DOCKER_PASSWORD" | docker login $CICD_REGISTRY -u "$DOCKER_USERNAME" --password-stdin'
+                    }
+                }
+            }
+        }
+
+        stage('compile') {
+            steps {
+                container('nodejs16150') {
+                    sh """
+                        yarn config set registry https://registry.npm.taobao.org
+                        export PUPPETEER_SKIP_DOWNLOAD='true'
+                        node -v
+                        yarn install 
+                        node -v
+                        yarn -v
+                        yarn test
+                    """
+                }
+            }
+        }
+
+        stage('push') {
+            steps {
+                container('nodejs16150') {
+                    sh """
+                     docker build --no-cache=true -f ./Dockerfile -t $CICD_REGISTRY/$HARBOR_NAMESPACE/bmwisdombrain:$CICD_SEQUENCE .
+                     docker push  $CICD_REGISTRY/$HARBOR_NAMESPACE/bmwisdombrain:$CICD_SEQUENCE
+                    """
+                }
+            }
+        }
+
+        stage('deploy to uat') {
+            steps {
+                //timeout(unit: 'SECONDS', activity: false, time: 120) {
+                    //input(id: 'deploy-to-uat', message: 'deploy to uat?')
+                    kubernetesDeploy(configs: 'z-k8s-deploy/uat/**', enableConfigSubstitution: true, kubeconfigId: "$UAT_KUBECONFIG_CREDENTIAL_ID")
+                //}
+            }
+        }
+    }
+
+}
